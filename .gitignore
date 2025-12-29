@@ -1,0 +1,5 @@
+config.json
+dnsdist.conf
+certs/
+caddy_data/
+caddy_config/

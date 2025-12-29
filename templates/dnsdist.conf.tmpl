@@ -1,0 +1,21 @@
+setLocal("0.0.0.0:53")
+setACL({'0.0.0.0/0', '::/0'})
+
+-- Сертификаты будут браться из папки, куда их положит скрипт из Caddy
+addTLSLocal("0.0.0.0:853", "/etc/dnsdist/certs/fullchain.pem", "/etc/dnsdist/certs/privkey.pem")
+addDOHLocal("0.0.0.0:8053", "/etc/dnsdist/certs/fullchain.pem", "/etc/dnsdist/certs/privkey.pem", "/dns-query")
+
+newServer({address="1.1.1.1:853", tls="openssl", subjectName="cloudflare-dns.com", validateCertificates=true})
+newServer({address="8.8.8.8:853", tls="openssl", subjectName="dns.google", validateCertificates=true})
+
+local pc = newPacketCache(100000, {maxTTL=86400, minTTL=0, temporaryFailureTTL=60, staleTTL=60})
+getPool(""):setCache(pc)
+
+-- Блокировки
+addAction(QNameSuffixRule({'googlesyndication.com.', 'adcolony.com.', 'hotjar.com.', 'mouseflow.com.', 'freshmarketer.com.', 'luckyorange.com.', 'bugsnag.com.', 'samsungads.com.', 'doubleclick.net.', 'media.net.'}), DropAction())
+addAction(RegexRule(".*iplog.*"), DropAction())
+addAction(RegexRule(".*sentry.*"), DropAction())
+
+-- Автоматически подставленные IP сервера
+local sni_ips = {"${IPV6}", "${IPV4}"}
+addAction(AllRule(), SpoofAction(sni_ips))
