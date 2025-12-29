@@ -16,9 +16,9 @@ echo "Определен IPv6: $IPV6"
 # 3. Создание директорий
 mkdir -p certs caddy_data caddy_config templates
 
-# 4. Генерация рабочих файлов из шаблонов
+# 4. Генерация рабочих файлов
 if [ ! -f templates/config.json.tmpl ] || [ ! -f templates/dnsdist.conf.tmpl ]; then
-    echo "Ошибка: Шаблоны в папке templates/ не найдены!"
+    echo "Ошибка: Шаблоны не найдены!"
     exit 1
 fi
 
@@ -27,39 +27,35 @@ sed -e "s/\${DOMAIN}/$DOMAIN/g" -e "s/\${IPV4}/$IPV4/g" -e "s/\${IPV6}/$IPV6/g" 
 
 # 5. Получение сертификата
 echo "Запускаем Caddy для получения сертификата..."
-
-# Запускаем Caddy. Добавлена опция --email для регистрации в ACME
 docker run --name caddy_setup -d \
   -p 80:80 -p 443:443 \
   -v $(pwd)/caddy_data:/data \
-  caddy:latest caddy reverse-proxy --from "$DOMAIN" --to localhost:9999 --contact-email "$EMAIL"
+  caddy:latest caddy reverse-proxy --from "$DOMAIN" --to localhost:9999 --email "$EMAIL"
 
-echo "Ожидаем 40 секунд (Caddy проходит ACME Challenge)..."
+echo "Ожидаем 40 секунд..."
 sleep 40
 
-# 6. Улучшенный поиск сертификатов
-# Caddy хранит их глубоко в caddy_data/caddy/certificates/...
+# 6. Копирование сертификатов с использованием sudo (из-за прав Docker)
 SEARCH_DIR="$(pwd)/caddy_data/caddy/certificates"
+# Используем sudo для поиска, так как файлы принадлежат root
+CRT_FILE=$(sudo find "$SEARCH_DIR" -name "$DOMAIN.crt" | head -n 1)
+KEY_FILE=$(sudo find "$SEARCH_DIR" -name "$DOMAIN.key" | head -n 1)
 
-# Ищем файл .crt и .key для указанного домена
-CRT_FILE=$(find "$SEARCH_DIR" -name "$DOMAIN.crt" | head -n 1)
-KEY_FILE=$(find "$SEARCH_DIR" -name "$DOMAIN.key" | head -n 1)
-
-if [ -n "$CRT_FILE" ] && [ -f "$CRT_FILE" ]; then
-    cp "$CRT_FILE" certs/fullchain.pem
-    cp "$KEY_FILE" certs/privkey.pem
-    echo "✅ СЕРТИФИКАТЫ НАЙДЕНЫ И СКОПИРОВАНЫ В ./certs/"
+if [ -n "$CRT_FILE" ]; then
+    sudo cp "$CRT_FILE" certs/fullchain.pem
+    sudo cp "$KEY_FILE" certs/privkey.pem
+    # Меняем владельца на текущего пользователя, чтобы dnsdist мог их прочитать
+    sudo chown $USER:$USER certs/*.pem
+    echo "✅ СЕРТИФИКАТЫ ПОЛУЧЕНЫ И СКОПИРОВАНЫ."
 else
-    echo "❌ ОШИБКА: Сертификаты не найдены в $SEARCH_DIR"
-    echo "--- ЛОГИ CADDY ---"
-    docker logs caddy_setup --tail 20
-    echo "------------------"
+    echo "❌ ОШИБКА: Сертификаты не найдены."
+    docker logs caddy_setup --tail 10
 fi
 
-# 7. Запуск основной инфраструктуры
-# Если у вас есть docker-compose.yml, лучше запускать его здесь
-echo "Запускаем стек через docker-compose..."
+# 7. Остановка временного контейнера и запуск основного стека
 docker rm -f caddy_setup > /dev/null 2>&1
+
+echo "Запускаем основной стек..."
 docker-compose up -d
 
 echo "Настройка завершена."
