@@ -26,33 +26,40 @@ sed "s/\${DOMAIN}/$DOMAIN/g" templates/config.json.tmpl > config.json
 sed -e "s/\${DOMAIN}/$DOMAIN/g" -e "s/\${IPV4}/$IPV4/g" -e "s/\${IPV6}/$IPV6/g" templates/dnsdist.conf.tmpl > dnsdist.conf
 
 # 5. Получение сертификата
-echo "Запускаем процесс получения сертификата..."
+echo "Запускаем Caddy для получения сертификата..."
 
-# Запуск Caddy одной командой для получения сертификата
-# Используем '--arg', чтобы прокинуть переменные
+# Запускаем Caddy. Добавлена опция --email для регистрации в ACME
 docker run --name caddy_setup -d \
   -p 80:80 -p 443:443 \
   -v $(pwd)/caddy_data:/data \
-  caddy:latest caddy reverse-proxy --from $DOMAIN --to localhost:9999 --access-log
+  caddy:latest caddy reverse-proxy --from "$DOMAIN" --to localhost:9999 --contact-email "$EMAIL"
 
 echo "Ожидаем 40 секунд (Caddy проходит ACME Challenge)..."
 sleep 40
 
-# Путь к сертификатам внутри caddy_data
-CERT_PATH="caddy_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$DOMAIN"
+# 6. Улучшенный поиск сертификатов
+# Caddy хранит их глубоко в caddy_data/caddy/certificates/...
+SEARCH_DIR="$(pwd)/caddy_data/caddy/certificates"
 
-if [ -f "$CERT_PATH/$DOMAIN.crt" ]; then
-    cp "$CERT_PATH/$DOMAIN.crt" certs/fullchain.pem
-    cp "$CERT_PATH/$DOMAIN.key" certs/privkey.pem
-    echo "✅ СЕРТИФИКАТЫ ПОЛУЧЕНЫ!"
+# Ищем файл .crt и .key для указанного домена
+CRT_FILE=$(find "$SEARCH_DIR" -name "$DOMAIN.crt" | head -n 1)
+KEY_FILE=$(find "$SEARCH_DIR" -name "$DOMAIN.key" | head -n 1)
+
+if [ -n "$CRT_FILE" ] && [ -f "$CRT_FILE" ]; then
+    cp "$CRT_FILE" certs/fullchain.pem
+    cp "$KEY_FILE" certs/privkey.pem
+    echo "✅ СЕРТИФИКАТЫ НАЙДЕНЫ И СКОПИРОВАНЫ В ./certs/"
 else
-    echo "❌ ОШИБКА: Сертификаты не появились."
+    echo "❌ ОШИБКА: Сертификаты не найдены в $SEARCH_DIR"
     echo "--- ЛОГИ CADDY ---"
-    docker logs caddy_setup
+    docker logs caddy_setup --tail 20
     echo "------------------"
 fi
 
-# Чистка
+# 7. Запуск основной инфраструктуры
+# Если у вас есть docker-compose.yml, лучше запускать его здесь
+echo "Запускаем стек через docker-compose..."
 docker rm -f caddy_setup > /dev/null 2>&1
+docker-compose up -d
 
 echo "Настройка завершена."
