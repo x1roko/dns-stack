@@ -14,53 +14,45 @@ echo "Определен IPv4: $IPV4"
 echo "Определен IPv6: $IPV6"
 
 # 3. Создание директорий
-mkdir -p certs caddy_data caddy_config
+mkdir -p certs caddy_data caddy_config templates
 
 # 4. Генерация рабочих файлов из шаблонов
+if [ ! -f templates/config.json.tmpl ] || [ ! -f templates/dnsdist.conf.tmpl ]; then
+    echo "Ошибка: Шаблоны в папке templates/ не найдены!"
+    exit 1
+fi
+
 sed "s/\${DOMAIN}/$DOMAIN/g" templates/config.json.tmpl > config.json
 sed -e "s/\${DOMAIN}/$DOMAIN/g" -e "s/\${IPV4}/$IPV4/g" -e "s/\${IPV6}/$IPV6/g" templates/dnsdist.conf.tmpl > dnsdist.conf
 
-# 5. Получение сертификата через Caddy JSON API
-echo "Получаем SSL сертификат..."
+# 5. Получение сертификата
+echo "Запускаем процесс получения сертификата..."
 
-# Создаем временный Caddyfile для получения сертификата
-cat <<EOF > Caddyfile.temp
-{
-    email $EMAIL
-}
-$DOMAIN {
-    tls {
-        on_demand
-    }
-    respond "OK"
-}
-EOF
-
-# Запускаем Caddy на короткое время, чтобы он выпустил сертификат
-docker run --rm -d \
-  --name caddy_gen \
-  -v $(pwd)/Caddyfile.temp:/etc/caddy/Caddyfile \
-  -v $(pwd)/caddy_data:/data \
+# Запуск Caddy одной командой для получения сертификата
+# Используем '--arg', чтобы прокинуть переменные
+docker run --name caddy_setup -d \
   -p 80:80 -p 443:443 \
-  caddy:latest
+  -v $(pwd)/caddy_data:/data \
+  caddy:latest caddy reverse-proxy --from $DOMAIN --to localhost:9999 --access-log
 
-echo "Ожидаем выпуска сертификата (30 секунд)..."
-sleep 30
+echo "Ожидаем 40 секунд (Caddy проходит ACME Challenge)..."
+sleep 40
 
-# Копируем сертификаты
-# В новых версиях Caddy использует расширение .crt и .key
-BASE_PATH="caddy_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$DOMAIN"
+# Путь к сертификатам внутри caddy_data
+CERT_PATH="caddy_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$DOMAIN"
 
-if [ -f "$BASE_PATH/$DOMAIN.crt" ]; then
-    cp "$BASE_PATH/$DOMAIN.crt" certs/fullchain.pem
-    cp "$BASE_PATH/$DOMAIN.key" certs/privkey.pem
-    echo "Сертификаты успешно скопированы."
+if [ -f "$CERT_PATH/$DOMAIN.crt" ]; then
+    cp "$CERT_PATH/$DOMAIN.crt" certs/fullchain.pem
+    cp "$CERT_PATH/$DOMAIN.key" certs/privkey.pem
+    echo "✅ СЕРТИФИКАТЫ ПОЛУЧЕНЫ!"
 else
-    echo "Ошибка: Сертификаты не найдены. Проверьте логи: docker logs caddy_gen"
+    echo "❌ ОШИБКА: Сертификаты не появились."
+    echo "--- ЛОГИ CADDY ---"
+    docker logs caddy_setup
+    echo "------------------"
 fi
 
-# Останавливаем временный контейнер и удаляем временный файл
-docker stop caddy_gen
-rm Caddyfile.temp
+# Чистка
+docker rm -f caddy_setup > /dev/null 2>&1
 
-echo "Настройка завершена! Теперь можно запускать: docker-compose up -d"
+echo "Настройка завершена."
